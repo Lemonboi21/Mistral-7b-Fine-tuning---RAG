@@ -17,6 +17,10 @@ from langchain_core.messages import (
     SystemMessage,
 )
 
+from langchain_community.vectorstores import FAISS
+from langchain.chains.combine_documents import create_stuff_documents_chain
+from langchain_core.prompts import ChatPromptTemplate
+from langchain.chains import create_retrieval_chain
 
 def init_page() -> None:
     st.set_page_config(
@@ -38,7 +42,7 @@ def select_llm() -> LlamaCpp:
     )
 
 def load_embed_model():
-    embed_model_Path = "..\models\sentence-transformers/all-mpnet-base-v2"
+    embed_model_Path = "..\models\sentence-transformers/all-MiniLM-L6-v2"
 
     embed_model = HuggingFaceEmbeddings(model_name=embed_model_Path)
     return embed_model 
@@ -56,31 +60,49 @@ def split_docs(documents, chunk_size=500, chunk_overlap=50):
     docs = text_splitter.split_documents(documents)
     return docs
 
-def create_db(docs , embed_model):
-    persist_directory = "chroma_db"
-    db = Chroma.from_documents(
-        documents=docs,
-        embedding=embed_model,
-        persist_directory=persist_directory
-    )
-    return db
+def create_retriever(docs , embed_model):
 
-def load_db():
-    persist_directory = "chroma_db"
-    db = Chroma(persist_directory=persist_directory, embedding_function=embed_model)
-    return db
+    vector = FAISS.from_documents(docs, embed_model),
+    print('*********************************************************************')
+    print (vector)
+    print('*********************************************************************')
+    retriever = vector[0].as_retriever()
+    
+    return retriever
 
-def load_chain(llm):
-    return load_qa_chain(llm, chain_type="stuff")
+
+def load_chain(llm , retriever):
+    
+    
+    prompt = ChatPromptTemplate.from_template("""You are a AI assistant for a company called 'IT Comp'. 
+                                                your job is to answer questions you get using the context provided,no more and no less.
+                                                if the context is irrelevant to the question you should ignore it.
+                                            the answers should be proffesional and informative.
+                                            you should not answer questions that are not related to the company.
+                                            if you don't know the answer you should say so.
+
+    <context>
+    {context}
+    </context>
+
+    Question: {input}""")
+
+
+    document_chain = create_stuff_documents_chain(llm, prompt)
+    retrieval_chain = create_retrieval_chain(retriever, document_chain)
+
+    return retrieval_chain
+
 
 def init_chatbot() -> None:
     llm = select_llm()
     embed_model = load_embed_model()
     documents = load_docs("../Data/mini_data.csv")
-    docs = split_docs(documents)
-    db = create_db(docs , embed_model)
-    chain = load_chain(llm)
-    return llm, db, chain
+    #docs = split_docs(documents)
+    retriever = create_retriever(documents , embed_model)
+    chain = load_chain(llm , retriever)
+    return llm, retriever, chain
+
 
 def init_messages() -> None:
     clear_button = st.sidebar.button("Clear conversation" , key="clear")
@@ -91,9 +113,9 @@ def init_messages() -> None:
             ),
         ]
 
-def get_answer(llm: LlamaCpp, db , chain , prompt: str) -> str:
-    similar_docs = db.similarity_search(prompt, k=2)
-    answer = chain.run(input_documents=similar_docs, question=prompt)
+def get_answer(llm: LlamaCpp, retriever , chain , prompt: str) -> str:
+    answer = chain.invoke({"input": prompt})
+    answer = answer["answer"]
     return answer
 
 
@@ -107,7 +129,9 @@ def get_answer(llm: LlamaCpp, db , chain , prompt: str) -> str:
 def main() -> None:
     init_page()
     init_messages()
-    llm, db, chain = init_chatbot()
+    llm, retriever, chain = init_chatbot()
+
+    
 
 
     if st.chat_input("input your question here", key="input"):
@@ -121,8 +145,8 @@ def main() -> None:
 
 
         with st.spinner("Thinking..."):
-            answer = get_answer(llm,db,chain, prompt)
-            print(f"Answer: {answer}")
+            answer = get_answer(llm,retriever,chain, prompt)
+            print(f"{answer}")
 
             message = st.chat_message("assistant")
             message.write(answer)
